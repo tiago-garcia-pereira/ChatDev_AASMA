@@ -36,6 +36,7 @@ class RuntimeBuilder:
 
         global_state: Dict[str, Any] = {
             "graph_directory": self.graph.directory,
+            "graph_source_path": self.graph.config.get_source_path(),
             "vars": self.graph.config.vars,
             "python_workspace_root": code_workspace,
             "attachment_store": attachment_store,
