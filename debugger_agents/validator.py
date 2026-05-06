@@ -56,3 +56,38 @@ def validate_patch(project_path: str | Path, unified_diff: str, test_command: st
             "stdout": test_result.stdout[-6000:],
             "stderr": test_result.stderr[-6000:],
         }
+
+
+def check_patch_applicability(project_path: str | Path, unified_diff: str) -> dict[str, Any]:
+    source = Path(project_path).resolve()
+    if not source.exists():
+        return {"valid": False, "reason": f"project path does not exist: {source}"}
+    if "diff --git " not in unified_diff or "--- " not in unified_diff or "+++ " not in unified_diff:
+        return {"valid": False, "reason": "patch is not a complete git-style unified diff"}
+
+    with tempfile.TemporaryDirectory(prefix="chatdev_patch_check_") as tmp:
+        tmp_path = Path(tmp) / "project"
+        if source.is_dir():
+            ignore = shutil.ignore_patterns(".git", ".venv", "__pycache__", ".pytest_cache", "node_modules")
+            shutil.copytree(source, tmp_path, ignore=ignore)
+            target_name = None
+        else:
+            tmp_path.mkdir()
+            shutil.copy2(source, tmp_path / source.name)
+            target_name = source.name
+
+        if target_name and f" b/{target_name}" not in unified_diff and f"+++ b/{target_name}" not in unified_diff:
+            return {"valid": False, "reason": f"patch does not target {target_name}"}
+
+        patch_result = subprocess.run(
+            ["git", "apply", "--check", "--whitespace=nowarn", "-"],
+            cwd=str(tmp_path),
+            input=unified_diff,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        return {
+            "valid": patch_result.returncode == 0,
+            "reason": "" if patch_result.returncode == 0 else patch_result.stderr.strip(),
+        }

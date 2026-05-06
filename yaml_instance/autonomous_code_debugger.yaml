@@ -2,7 +2,7 @@ version: 0.4.0
 vars: {}
 graph:
   id: autonomous_code_debugger
-  description: Autonomous multi-agent code debugger with five strategic fixers, debate, Borda consensus, and validation.
+  description: Lightweight autonomous code debugger with 3 fixers, 1 judge, Borda consensus, validation, and patch application.
   log_level: DEBUG
   is_majority_voting: false
   memory: []
@@ -19,7 +19,7 @@ graph:
   nodes:
     - id: Input Context
       type: python
-      description: Converts uploaded Python files and the launch prompt into explicit debugger context.
+      description: Converts the launch prompt into explicit debugger context.
       context_window: -1
       config:
         script_path: debugger_agents/run_input_context.py
@@ -32,34 +32,6 @@ graph:
       config:
         script_path: debugger_agents/run_auto_reproducer.py
         timeout_seconds: 90
-
-    - id: Bug Reproducer
-      type: agent
-      description: Reproduces or clarifies the failing behavior.
-      context_window: 0
-      config:
-        name: qwen2.5-coder:7b
-        provider: openai
-        base_url: ${BASE_URL}
-        api_key: ${API_KEY}
-        params:
-          protocol: chat
-          temperature: 0.1
-        role: |
-          You are Bug Reproducer. Inspect the user's bug report, traceback, project path, and failing command.
-          If tools are available, inspect files and run the smallest relevant command. Do not edit files.
-          Output:
-          - reproduction steps
-          - observed error
-          - suspected failing file/function
-          - exact TEST_COMMAND if the user provided one
-        tooling:
-          - type: function
-            config:
-              tools:
-                - name: file:All
-                - name: uv_related:All
-              timeout: null
 
     - id: Static Analyzer
       type: python
@@ -80,7 +52,8 @@ graph:
         api_key: ${API_KEY}
         params:
           protocol: chat
-          temperature: 0.2
+          temperature: 0.1
+          max_tokens: 700
         tooling:
           - type: function
             config:
@@ -90,26 +63,10 @@ graph:
         role: |
           You are Conservative Fixer.
           Strategy: change only the exact line or smallest local expression that causes the crash.
-          Prioritize low blast radius and avoid refactors.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
           The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
           Return only JSON inside a ```json block with:
           fixer_id="conservative", strategy, diagnosis, files_changed, unified_diff, confidence.
-
-    - id: Refactor Fixer
-      type: agent
-      description: Structural patch strategy.
-      context_window: -1
-      config:
-        <<: *fixer_model
-        role: |
-          You are Refactor Fixer.
-          Strategy: if the bug is a symptom of poor structure, propose a broader but coherent rewrite.
-          Preserve behavior where possible, but improve the code shape when it prevents the bug recurring.
-          Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
-          The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
-          Return only JSON inside a ```json block with:
-          fixer_id="refactor", strategy, diagnosis, files_changed, unified_diff, confidence.
 
     - id: Defensive Fixer
       type: agent
@@ -119,27 +76,11 @@ graph:
         <<: *fixer_model
         role: |
           You are Defensive Fixer.
-          Strategy: fix the bug by adding validations, type checks, guards, and clear handling for edge cases.
-          Prefer explicit failure modes over silent corruption.
+          Strategy: fix the bug with a small guard, validation, or explicit edge-case handling only when that is better than changing one expression.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
           The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
           Return only JSON inside a ```json block with:
           fixer_id="defensive", strategy, diagnosis, files_changed, unified_diff, confidence.
-
-    - id: Performance Fixer
-      type: agent
-      description: Efficient patch strategy.
-      context_window: -1
-      config:
-        <<: *fixer_model
-        role: |
-          You are Performance Fixer.
-          Strategy: fix the bug while checking whether the solution can be more efficient in time, memory, or repeated work.
-          Avoid premature complexity; only optimize when connected to the bug or a clear hot path.
-          Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
-          The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
-          Return only JSON inside a ```json block with:
-          fixer_id="performance", strategy, diagnosis, files_changed, unified_diff, confidence.
 
     - id: Root Cause Fixer
       type: agent
@@ -149,18 +90,17 @@ graph:
         <<: *fixer_model
         role: |
           You are Root-Cause Fixer.
-          Strategy: ignore superficial symptoms at first and find the upstream cause that created the invalid state.
-          Patch the source of the bad value or control flow, not only the crash site.
+          Strategy: find and patch the upstream cause that created the invalid state, not just the crash site.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
           The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
           Return only JSON inside a ```json block with:
           fixer_id="root_cause", strategy, diagnosis, files_changed, unified_diff, confidence.
 
-    - id: Conservative Debater
+    - id: Patch Judge
       type: agent
-      description: Debate/ranking round from the conservative perspective.
+      description: Single judge that ranks the 3 fixer patches.
       context_window: -1
-      config: &debater_model
+      config:
         name: qwen2.5-coder:7b
         provider: openai
         base_url: ${BASE_URL}
@@ -168,64 +108,18 @@ graph:
         params:
           protocol: chat
           temperature: 0.1
+          max_tokens: 500
         role: |
-          You are a debate voter in an iterative voting protocol.
-          Read all patch proposals. Rank proposal IDs from best to worst for correctness, safety, and testability.
-          You may vote against your own proposal if another is better.
+          You are Patch Judge.
+          Read the real file content, reproduced error, static analysis, and the three patch proposals.
+          Rank proposal IDs from best to worst. Prefer patches that are correct, minimal, apply cleanly, and directly fix the reproduced error.
+          Penalize invented code, unrelated examples, missing diffs, and corrupt patches.
           Return only JSON inside a ```json block:
-          {"voter_id":"conservative","ranking":["..."],"selected":"...","rationale":"..."}
-
-    - id: Refactor Debater
-      type: agent
-      description: Debate/ranking round from the refactor perspective.
-      context_window: -1
-      config:
-        <<: *debater_model
-        role: |
-          You are a debate voter in an iterative voting protocol.
-          Prefer patches that fix the underlying structure without adding unnecessary risk.
-          Return only JSON inside a ```json block:
-          {"voter_id":"refactor","ranking":["..."],"selected":"...","rationale":"..."}
-
-    - id: Defensive Debater
-      type: agent
-      description: Debate/ranking round from the defensive perspective.
-      context_window: -1
-      config:
-        <<: *debater_model
-        role: |
-          You are a debate voter in an iterative voting protocol.
-          Prefer patches that handle edge cases and invalid inputs clearly.
-          Return only JSON inside a ```json block:
-          {"voter_id":"defensive","ranking":["..."],"selected":"...","rationale":"..."}
-
-    - id: Performance Debater
-      type: agent
-      description: Debate/ranking round from the performance perspective.
-      context_window: -1
-      config:
-        <<: *debater_model
-        role: |
-          You are a debate voter in an iterative voting protocol.
-          Prefer patches that fix the bug with efficient, simple execution.
-          Return only JSON inside a ```json block:
-          {"voter_id":"performance","ranking":["..."],"selected":"...","rationale":"..."}
-
-    - id: Root Cause Debater
-      type: agent
-      description: Debate/ranking round from the root-cause perspective.
-      context_window: -1
-      config:
-        <<: *debater_model
-        role: |
-          You are a debate voter in an iterative voting protocol.
-          Prefer patches that fix the upstream cause of the failure, not just the symptom.
-          Return only JSON inside a ```json block:
-          {"voter_id":"root_cause","ranking":["..."],"selected":"...","rationale":"..."}
+          {"voter_id":"judge","ranking":["..."],"selected":"...","rationale":"..."}
 
     - id: Borda Consensus
       type: python
-      description: Selects a patch with Borda count.
+      description: Selects a patch with Borda count after filtering invalid patches.
       context_window: -1
       config:
         script_path: debugger_agents/run_consensus.py
@@ -249,7 +143,7 @@ graph:
 
     - id: Final Report
       type: agent
-      description: Produces an experiment report from the consensus and validation outputs.
+      description: Produces a concise debugging report from the workflow outputs.
       context_window: -1
       config:
         name: qwen2.5-coder:7b
@@ -259,243 +153,139 @@ graph:
         params:
           protocol: chat
           temperature: 0.1
+          max_tokens: 700
         role: |
           You are Final Debugging Report Writer.
-          Summarize:
-          - the original failure
-          - the five strategies and their proposed patches
-          - debate rankings
-          - the Borda consensus result
-          - the validation result for the selected patch
-          - whether the patch was applied to the original file
-          - what data should be logged for the project report
+          Summarize the original failure, the three fixer proposals, the judge ranking, Borda consensus, validation result, and whether the patch was applied.
           Do not invent results; use only the provided workflow outputs.
 
   edges:
     - from: Input Context
       to: Auto Reproducer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
-      carry_data: true
-      keep_message: true
-    - from: Auto Reproducer
-      to: Bug Reproducer
-      trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: &always {type: function, config: {name: 'true'}}
       carry_data: true
       keep_message: true
     - from: Input Context
       to: Static Analyzer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
-      carry_data: true
-      keep_message: true
-    - from: Bug Reproducer
-      to: Static Analyzer
-      trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
       to: Static Analyzer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
       carry_data: true
       keep_message: true
 
-    - from: Static Analyzer
+    - from: Input Context
       to: Conservative Fixer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
+      carry_data: true
+      keep_message: true
+    - from: Auto Reproducer
+      to: Conservative Fixer
+      trigger: true
+      condition: *always
       carry_data: true
       keep_message: true
     - from: Static Analyzer
-      to: Refactor Fixer
+      to: Conservative Fixer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
+      carry_data: true
+      keep_message: true
+
+    - from: Input Context
+      to: Defensive Fixer
+      trigger: true
+      condition: *always
+      carry_data: true
+      keep_message: true
+    - from: Auto Reproducer
+      to: Defensive Fixer
+      trigger: true
+      condition: *always
       carry_data: true
       keep_message: true
     - from: Static Analyzer
       to: Defensive Fixer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
       carry_data: true
       keep_message: true
-    - from: Static Analyzer
-      to: Performance Fixer
+
+    - from: Input Context
+      to: Root Cause Fixer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
+      carry_data: true
+      keep_message: true
+    - from: Auto Reproducer
+      to: Root Cause Fixer
+      trigger: true
+      condition: *always
       carry_data: true
       keep_message: true
     - from: Static Analyzer
       to: Root Cause Fixer
       trigger: true
-      condition: {type: function, config: {name: 'true'}}
+      condition: *always
       carry_data: true
       keep_message: true
 
-    - from: Conservative Fixer
-      to: Conservative Debater
+    - from: Input Context
+      to: Patch Judge
       trigger: true
-      condition: &always {type: function, config: {name: 'true'}}
+      condition: *always
       carry_data: true
       keep_message: true
-    - from: Refactor Fixer
-      to: Conservative Debater
+    - from: Auto Reproducer
+      to: Patch Judge
+      trigger: true
+      condition: *always
+      carry_data: true
+      keep_message: true
+    - from: Static Analyzer
+      to: Patch Judge
+      trigger: true
+      condition: *always
+      carry_data: true
+      keep_message: true
+    - from: Conservative Fixer
+      to: Patch Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Defensive Fixer
-      to: Conservative Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Fixer
-      to: Conservative Debater
+      to: Patch Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Root Cause Fixer
-      to: Conservative Debater
+      to: Patch Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
 
-    - from: Conservative Fixer
-      to: Refactor Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Refactor Fixer
-      to: Refactor Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Fixer
-      to: Refactor Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Fixer
-      to: Refactor Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Fixer
-      to: Refactor Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-
-    - from: Conservative Fixer
-      to: Defensive Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Refactor Fixer
-      to: Defensive Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Fixer
-      to: Defensive Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Fixer
-      to: Defensive Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Fixer
-      to: Defensive Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-
-    - from: Conservative Fixer
-      to: Performance Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Refactor Fixer
-      to: Performance Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Fixer
-      to: Performance Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Fixer
-      to: Performance Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Fixer
-      to: Performance Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-
-    - from: Conservative Fixer
-      to: Root Cause Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Refactor Fixer
-      to: Root Cause Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Fixer
-      to: Root Cause Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Fixer
-      to: Root Cause Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Fixer
-      to: Root Cause Debater
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-
-    - from: Conservative Fixer
+    - from: Input Context
       to: Borda Consensus
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Refactor Fixer
+    - from: Auto Reproducer
+      to: Borda Consensus
+      trigger: true
+      condition: *always
+      carry_data: true
+      keep_message: true
+    - from: Conservative Fixer
       to: Borda Consensus
       trigger: true
       condition: *always
@@ -507,43 +297,13 @@ graph:
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Performance Fixer
-      to: Borda Consensus
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
     - from: Root Cause Fixer
       to: Borda Consensus
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Conservative Debater
-      to: Borda Consensus
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Refactor Debater
-      to: Borda Consensus
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Debater
-      to: Borda Consensus
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Debater
-      to: Borda Consensus
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Debater
+    - from: Patch Judge
       to: Borda Consensus
       trigger: true
       condition: *always
@@ -556,12 +316,6 @@ graph:
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Bug Reproducer
-      to: Validate Borda
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
     - from: Input Context
       to: Validate Borda
       trigger: true
@@ -574,6 +328,14 @@ graph:
       condition: *always
       carry_data: true
       keep_message: true
+
+    - from: Validate Borda
+      to: Apply Patch
+      trigger: true
+      condition: *always
+      carry_data: true
+      keep_message: true
+
     - from: Input Context
       to: Final Report
       trigger: true
@@ -581,12 +343,6 @@ graph:
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Bug Reproducer
       to: Final Report
       trigger: true
       condition: *always
@@ -604,19 +360,7 @@ graph:
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Refactor Fixer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
     - from: Defensive Fixer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Fixer
       to: Final Report
       trigger: true
       condition: *always
@@ -628,31 +372,7 @@ graph:
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Conservative Debater
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Refactor Debater
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Debater
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Performance Debater
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Debater
+    - from: Patch Judge
       to: Final Report
       trigger: true
       condition: *always
@@ -660,12 +380,6 @@ graph:
       keep_message: true
     - from: Borda Consensus
       to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Validate Borda
-      to: Apply Patch
       trigger: true
       condition: *always
       carry_data: true
