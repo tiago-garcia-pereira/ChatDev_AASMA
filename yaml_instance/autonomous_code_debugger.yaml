@@ -2,7 +2,7 @@ version: 0.4.0
 vars: {}
 graph:
   id: autonomous_code_debugger
-  description: Lightweight autonomous code debugger with 3 fixers, 1 judge, Borda consensus, validation, and patch application.
+  description: Lightweight autonomous code debugger with 3 fixers, 1 judge, Borda consensus, and final winner code output.
   log_level: DEBUG
   is_majority_voting: false
   memory: []
@@ -35,7 +35,7 @@ graph:
 
     - id: Static Analyzer
       type: python
-      description: Runs deterministic static analysis before patch generation.
+      description: Runs deterministic static analysis before solution generation.
       context_window: -1
       config:
         script_path: debugger_agents/run_static_analyzer.py
@@ -43,10 +43,10 @@ graph:
 
     - id: Conservative Fixer
       type: agent
-      description: Minimal exact-line patch strategy.
+      description: Minimal exact-line solution strategy.
       context_window: -1
       config: &fixer_model
-        name: qwen2.5-coder:7b
+        name: qwen2.5-coder:3b
         provider: openai
         base_url: ${BASE_URL}
         api_key: ${API_KEY}
@@ -64,13 +64,18 @@ graph:
           You are Conservative Fixer.
           Strategy: change only the exact line or smallest local expression that causes the crash.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
-          The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
+          Output requirements are mandatory:
+          1) Return only JSON inside a ```json block.
+          2) Include keys: fixer_id, strategy, diagnosis, files_changed, solution_files, confidence.
+          3) solution_files must be a list of objects with keys: path and code.
+          4) code must be the final file content (copyable), never git diff format.
+          If you cannot produce a valid solution, return solution_files=[] and explain why in diagnosis.
           Return only JSON inside a ```json block with:
-          fixer_id="conservative", strategy, diagnosis, files_changed, unified_diff, confidence.
+          fixer_id="conservative", strategy, diagnosis, files_changed, solution_files, confidence.
 
     - id: Defensive Fixer
       type: agent
-      description: Guards and edge-case patch strategy.
+      description: Guards and edge-case solution strategy.
       context_window: -1
       config:
         <<: *fixer_model
@@ -78,30 +83,40 @@ graph:
           You are Defensive Fixer.
           Strategy: fix the bug with a small guard, validation, or explicit edge-case handling only when that is better than changing one expression.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
-          The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
+          Output requirements are mandatory:
+          1) Return only JSON inside a ```json block.
+          2) Include keys: fixer_id, strategy, diagnosis, files_changed, solution_files, confidence.
+          3) solution_files must be a list of objects with keys: path and code.
+          4) code must be the final file content (copyable), never git diff format.
+          If you cannot produce a valid solution, return solution_files=[] and explain why in diagnosis.
           Return only JSON inside a ```json block with:
-          fixer_id="defensive", strategy, diagnosis, files_changed, unified_diff, confidence.
+          fixer_id="defensive", strategy, diagnosis, files_changed, solution_files, confidence.
 
     - id: Root Cause Fixer
       type: agent
-      description: Upstream root-cause patch strategy.
+      description: Upstream root-cause solution strategy.
       context_window: -1
       config:
         <<: *fixer_model
         role: |
           You are Root-Cause Fixer.
-          Strategy: find and patch the upstream cause that created the invalid state, not just the crash site.
+          Strategy: find and fix the upstream cause that created the invalid state, not just the crash site.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
-          The unified_diff must be a complete git-style diff with file headers, e.g. "diff --git a/path b/path", "--- a/path", "+++ b/path".
+          Output requirements are mandatory:
+          1) Return only JSON inside a ```json block.
+          2) Include keys: fixer_id, strategy, diagnosis, files_changed, solution_files, confidence.
+          3) solution_files must be a list of objects with keys: path and code.
+          4) code must be the final file content (copyable), never git diff format.
+          If you cannot produce a valid solution, return solution_files=[] and explain why in diagnosis.
           Return only JSON inside a ```json block with:
-          fixer_id="root_cause", strategy, diagnosis, files_changed, unified_diff, confidence.
+          fixer_id="root_cause", strategy, diagnosis, files_changed, solution_files, confidence.
 
-    - id: Patch Judge
+    - id: Solution Judge
       type: agent
-      description: Single judge that ranks the 3 fixer patches.
+      description: Single judge that ranks the 3 fixer solutions.
       context_window: -1
       config:
-        name: qwen2.5-coder:7b
+        name: qwen2.5-coder:3b
         provider: openai
         base_url: ${BASE_URL}
         api_key: ${API_KEY}
@@ -110,43 +125,27 @@ graph:
           temperature: 0.1
           max_tokens: 500
         role: |
-          You are Patch Judge.
-          Read the real file content, reproduced error, static analysis, and the three patch proposals.
-          Rank proposal IDs from best to worst. Prefer patches that are correct, minimal, apply cleanly, and directly fix the reproduced error.
-          Penalize invented code, unrelated examples, missing diffs, and corrupt patches.
+          You are Solution Judge.
+          Read the real file content, reproduced error, static analysis, and the three solution proposals.
+          Rank proposal IDs from best to worst. Prefer solutions that are correct, minimal, and directly fix the reproduced error.
+          Penalize invented code, unrelated examples, missing code blocks, and inconsistent outputs.
           Return only JSON inside a ```json block:
           {"voter_id":"judge","ranking":["..."],"selected":"...","rationale":"..."}
 
     - id: Borda Consensus
       type: python
-      description: Selects a patch with Borda count after filtering invalid patches.
+      description: Selects the winner solution with Borda count.
       context_window: -1
       config:
         script_path: debugger_agents/run_consensus.py
         timeout_seconds: 60
 
-    - id: Validate Borda
-      type: python
-      description: Applies and tests the Borda winner in a temporary sandbox.
-      context_window: -1
-      config:
-        script_path: debugger_agents/run_validator.py
-        timeout_seconds: 180
-
-    - id: Apply Patch
-      type: python
-      description: Applies the validated Borda winner to the original project path.
-      context_window: -1
-      config:
-        script_path: debugger_agents/run_apply_patch.py
-        timeout_seconds: 60
-
     - id: Final Report
       type: agent
-      description: Produces a concise debugging report from the workflow outputs.
+      description: Produces only the winner solution in copyable code format.
       context_window: -1
       config:
-        name: qwen2.5-coder:7b
+        name: qwen2.5-coder:3b
         provider: openai
         base_url: ${BASE_URL}
         api_key: ${API_KEY}
@@ -156,8 +155,9 @@ graph:
           max_tokens: 700
         role: |
           You are Final Debugging Report Writer.
-          Summarize the original failure, the three fixer proposals, the judge ranking, Borda consensus, validation result, and whether the patch was applied.
+          Summarize the original failure, the three fixer proposals, the judge ranking, borda consensus, and provide the winner solution in copyable code format.
           Do not invent results; use only the provided workflow outputs.
+
 
   edges:
     - from: Input Context
@@ -236,38 +236,40 @@ graph:
       carry_data: true
       keep_message: true
 
+    
+
     - from: Input Context
-      to: Patch Judge
+      to: Solution Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
-      to: Patch Judge
+      to: Solution Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Static Analyzer
-      to: Patch Judge
+      to: Solution Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Conservative Fixer
-      to: Patch Judge
+      to: Solution Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Defensive Fixer
-      to: Patch Judge
+      to: Solution Judge
       trigger: true
       condition: *always
       carry_data: true
       keep_message: true
     - from: Root Cause Fixer
-      to: Patch Judge
+      to: Solution Judge
       trigger: true
       condition: *always
       carry_data: true
@@ -303,7 +305,7 @@ graph:
       condition: *always
       carry_data: true
       keep_message: true
-    - from: Patch Judge
+    - from: Solution Judge
       to: Borda Consensus
       trigger: true
       condition: *always
@@ -311,86 +313,6 @@ graph:
       keep_message: true
 
     - from: Borda Consensus
-      to: Validate Borda
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Input Context
-      to: Validate Borda
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Auto Reproducer
-      to: Validate Borda
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-
-    - from: Validate Borda
-      to: Apply Patch
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-
-    - from: Input Context
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Auto Reproducer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Static Analyzer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Conservative Fixer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Defensive Fixer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Root Cause Fixer
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Patch Judge
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Borda Consensus
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Validate Borda
-      to: Final Report
-      trigger: true
-      condition: *always
-      carry_data: true
-      keep_message: true
-    - from: Apply Patch
       to: Final Report
       trigger: true
       condition: *always

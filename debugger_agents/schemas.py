@@ -9,7 +9,7 @@ class PatchProposal:
     fixer_id: str
     strategy: str
     diagnosis: str
-    unified_diff: str
+    solution_code: str
     confidence: float = 0.0
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -19,11 +19,32 @@ class PatchProposal:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], fallback_id: str = "unknown") -> "PatchProposal":
+        # Prefer plain code output; keep legacy diff fields for backward compatibility.
+        solution_code = str(data.get("solution_code") or "")
+        if not solution_code:
+            files = data.get("solution_files")
+            if isinstance(files, list):
+                rendered: list[str] = []
+                for item in files:
+                    if not isinstance(item, dict):
+                        continue
+                    path = str(item.get("path") or "").strip()
+                    code = str(item.get("code") or "")
+                    if not code:
+                        continue
+                    if path:
+                        rendered.append(f"# FILE: {path}\n{code}")
+                    else:
+                        rendered.append(code)
+                solution_code = "\n\n".join(rendered).strip()
+        if not solution_code:
+            solution_code = str(data.get("unified_diff") or data.get("patch") or "")
+
         return cls(
             fixer_id=str(data.get("fixer_id") or data.get("agent") or fallback_id),
             strategy=str(data.get("strategy") or ""),
             diagnosis=str(data.get("diagnosis") or data.get("rationale") or ""),
-            unified_diff=str(data.get("unified_diff") or data.get("patch") or ""),
+            solution_code=solution_code,
             confidence=_float(data.get("confidence"), default=0.0),
             raw=dict(data),
         )

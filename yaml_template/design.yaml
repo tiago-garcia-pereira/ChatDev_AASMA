@@ -207,7 +207,7 @@ graph:
           <variant[config]=file>:
             path: <string> | required
       <variant[config]=python>:
-        interpreter: <string> | "/home/guilinux/AASMA/ChatDev/ChatDev/venv/bin/python"
+        interpreter: <string> | "/home/guilinux/AASMA_V2/ChatDev/venv/bin/python"
         args:
         - <string> | None
         script_path: <string> | None

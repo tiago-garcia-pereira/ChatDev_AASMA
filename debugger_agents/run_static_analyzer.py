@@ -16,8 +16,9 @@ def main() -> None:
         "type": "static_analysis",
         "analysis": analyze_project(project_path),
         "instruction": (
-            "Fixers must return JSON with fixer_id, strategy, diagnosis, unified_diff, "
-            "files_changed, confidence."
+            "Fixers must return JSON with fixer_id, strategy, diagnosis, files_changed, "
+            "solution_files (list of {path, code}) or solution_code, and confidence. "
+            "Do not use git-style diffs."
         ),
     })
 
