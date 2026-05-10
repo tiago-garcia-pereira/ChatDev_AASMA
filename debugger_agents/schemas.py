@@ -62,6 +62,8 @@ class FixerVote:
         ranking = data.get("ranking") or []
         if isinstance(ranking, str):
             ranking = [item.strip() for item in ranking.split(",") if item.strip()]
+        elif not isinstance(ranking, list):
+            ranking = []
         selected = data.get("selected") or data.get("vote")
         return cls(
             voter_id=str(data.get("voter_id") or data.get("fixer_id") or data.get("agent") or fallback_id),
@@ -76,4 +78,3 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
-

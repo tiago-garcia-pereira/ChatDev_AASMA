@@ -11,6 +11,10 @@ def borda_count(proposals: list[PatchProposal], votes: list[FixerVote]) -> dict:
     scores: defaultdict[str, float] = defaultdict(float)
     for vote in votes:
         ranking = [item for item in vote.ranking if item in proposal_ids]
+        if not ranking and vote.selected in proposal_ids:
+            ranking = [vote.selected]
+        if not ranking:
+            continue
         ranking.extend(item for item in proposal_ids if item not in ranking)
         for rank, proposal_id in enumerate(ranking):
             scores[proposal_id] += n - rank - 1

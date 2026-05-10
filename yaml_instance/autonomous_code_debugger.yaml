@@ -2,7 +2,7 @@ version: 0.4.0
 vars: {}
 graph:
   id: autonomous_code_debugger
-  description: Lightweight autonomous code debugger with 3 fixers, 1 judge, Borda consensus, and final winner code output.
+  description: Lightweight autonomous code debugger with 3 fixers, 3 specialized judges, Borda consensus, and final winner code output.
   log_level: DEBUG
   is_majority_voting: false
   memory: []
@@ -24,7 +24,6 @@ graph:
       config:
         script_path: debugger_agents/run_input_context.py
         timeout_seconds: 60
-
     - id: Auto Reproducer
       type: python
       description: Runs the inferred failing command from path_project/PROJECT_PATH.
@@ -32,7 +31,6 @@ graph:
       config:
         script_path: debugger_agents/run_auto_reproducer.py
         timeout_seconds: 90
-
     - id: Static Analyzer
       type: python
       description: Runs deterministic static analysis before solution generation.
@@ -40,12 +38,11 @@ graph:
       config:
         script_path: debugger_agents/run_static_analyzer.py
         timeout_seconds: 120
-
     - id: Conservative Fixer
       type: agent
       description: Minimal exact-line solution strategy.
       context_window: -1
-      config: &fixer_model
+      config:
         name: qwen2.5-coder:3b
         provider: openai
         base_url: ${BASE_URL}
@@ -64,6 +61,7 @@ graph:
           You are Conservative Fixer.
           Strategy: change only the exact line or smallest local expression that causes the crash.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
+          For a literal IndexError on a literal list, do not choose an arbitrary valid index. Prefer the closest valid index that preserves the apparent intended position, for example index 3 -> index 2 for a list with 3 elements.
           Output requirements are mandatory:
           1) Return only JSON inside a ```json block.
           2) Include keys: fixer_id, strategy, diagnosis, files_changed, solution_files, confidence.
@@ -72,17 +70,30 @@ graph:
           If you cannot produce a valid solution, return solution_files=[] and explain why in diagnosis.
           Return only JSON inside a ```json block with:
           fixer_id="conservative", strategy, diagnosis, files_changed, solution_files, confidence.
-
     - id: Defensive Fixer
       type: agent
       description: Guards and edge-case solution strategy.
       context_window: -1
       config:
-        <<: *fixer_model
+        name: qwen2.5-coder:3b
+        provider: openai
+        base_url: ${BASE_URL}
+        api_key: ${API_KEY}
+        params:
+          protocol: chat
+          temperature: 0.1
+          max_tokens: 700
+        tooling:
+          - type: function
+            config:
+              tools:
+                - name: file:All
+              timeout: null
         role: |
           You are Defensive Fixer.
           Strategy: fix the bug with a small guard, validation, or explicit edge-case handling only when that is better than changing one expression.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
+          A guard/if-else solution is allowed, but it should be treated as defensive fallback. For deterministic literal data with an obvious one-expression fix, mention that the direct fix may be preferable in the diagnosis.
           Output requirements are mandatory:
           1) Return only JSON inside a ```json block.
           2) Include keys: fixer_id, strategy, diagnosis, files_changed, solution_files, confidence.
@@ -91,17 +102,30 @@ graph:
           If you cannot produce a valid solution, return solution_files=[] and explain why in diagnosis.
           Return only JSON inside a ```json block with:
           fixer_id="defensive", strategy, diagnosis, files_changed, solution_files, confidence.
-
     - id: Root Cause Fixer
       type: agent
       description: Upstream root-cause solution strategy.
       context_window: -1
       config:
-        <<: *fixer_model
+        name: qwen2.5-coder:3b
+        provider: openai
+        base_url: ${BASE_URL}
+        api_key: ${API_KEY}
+        params:
+          protocol: chat
+          temperature: 0.1
+          max_tokens: 700
+        tooling:
+          - type: function
+            config:
+              tools:
+                - name: file:All
+              timeout: null
         role: |
           You are Root-Cause Fixer.
           Strategy: find and fix the upstream cause that created the invalid state, not just the crash site.
           Use only the real file content and traceback/context provided in the input. Do not invent functions, variables, files, or unrelated examples.
+          For a literal IndexError on a literal list, consider whether the root cause is an off-by-one index. If so, prefer the closest valid index that preserves the apparent intended position instead of choosing an arbitrary valid element.
           Output requirements are mandatory:
           1) Return only JSON inside a ```json block.
           2) Include keys: fixer_id, strategy, diagnosis, files_changed, solution_files, confidence.
@@ -110,10 +134,9 @@ graph:
           If you cannot produce a valid solution, return solution_files=[] and explain why in diagnosis.
           Return only JSON inside a ```json block with:
           fixer_id="root_cause", strategy, diagnosis, files_changed, solution_files, confidence.
-
-    - id: Solution Judge
+    - id: Correctness Judge
       type: agent
-      description: Single judge that ranks the 3 fixer solutions.
+      description: Ranks the 3 fixer solutions by correctness.
       context_window: -1
       config:
         name: qwen2.5-coder:3b
@@ -125,24 +148,19 @@ graph:
           temperature: 0.1
           max_tokens: 500
         role: |
-          You are Solution Judge.
+          You are Correctness Judge.
           Read the real file content, reproduced error, static analysis, and the three solution proposals.
-          Rank proposal IDs from best to worst. Prefer solutions that are correct, minimal, and directly fix the reproduced error.
-          Penalize invented code, unrelated examples, missing code blocks, and inconsistent outputs.
+          Rank proposal IDs from best to worst by likely functional correctness.
+          Prefer solutions that directly fix the reproduced error, preserve intended behavior, and are consistent with the real code.
+          Defensive guards are valid candidates, but for deterministic literal data with an obvious direct correction, rank a behavior-preserving direct fix above a guard that merely avoids the crash or changes the output.
+          Penalize arbitrary valid indices, such as changing index 3 to index 1 without evidence.
+          Penalize solutions that do not address the traceback, introduce new failures, invent APIs/files, or omit required code.
+          The ranking must contain all and only the fixer proposal IDs, for example ["conservative","defensive","root_cause"]. selected must equal ranking[0].
           Return only JSON inside a ```json block:
-          {"voter_id":"judge","ranking":["..."],"selected":"...","rationale":"..."}
-
-    - id: Borda Consensus
-      type: python
-      description: Selects the winner solution with Borda count.
-      context_window: -1
-      config:
-        script_path: debugger_agents/run_consensus.py
-        timeout_seconds: 60
-
-    - id: Final Report
+          {"voter_id":"correctness_judge","ranking":["..."],"selected":"...","rationale":"..."}
+    - id: Minimality Judge
       type: agent
-      description: Produces only the winner solution in copyable code format.
+      description: Ranks the 3 fixer solutions by minimality and maintainability.
       context_window: -1
       config:
         name: qwen2.5-coder:3b
@@ -152,169 +170,430 @@ graph:
         params:
           protocol: chat
           temperature: 0.1
-          max_tokens: 700
+          max_tokens: 500
+        role: |
+          You are Minimality Judge.
+          Read the real file content, reproduced error, static analysis, and the three solution proposals.
+          Rank proposal IDs from best to worst by how small, focused, and maintainable the change is.
+          Prefer solutions that change only what is necessary, preserve local style, and avoid broad rewrites.
+          Defensive guards are valid candidates, but for deterministic literal data with an obvious direct correction, rank the direct one-expression fix above an if/else guard.
+          Penalize arbitrary valid indices that change which element is used without evidence.
+          Penalize unrelated refactors, excessive guards, duplicated code, invented examples, and changes that obscure the original intent.
+          The ranking must contain all and only the fixer proposal IDs, for example ["conservative","defensive","root_cause"]. selected must equal ranking[0].
+          Return only JSON inside a ```json block:
+          {"voter_id":"minimality_judge","ranking":["..."],"selected":"...","rationale":"..."}
+    - id: Risk Judge
+      type: agent
+      description: Ranks the 3 fixer solutions by regression and safety risk.
+      context_window: -1
+      config:
+        name: qwen2.5-coder:3b
+        provider: openai
+        base_url: ${BASE_URL}
+        api_key: ${API_KEY}
+        params:
+          protocol: chat
+          temperature: 0.1
+          max_tokens: 500
+        role: |
+          You are Risk Judge.
+          Read the real file content, reproduced error, static analysis, and the three solution proposals.
+          Rank proposal IDs from best to worst by lowest regression risk.
+          Prefer solutions that are robust for edge cases, avoid hiding failures, and do not broaden behavior unexpectedly.
+          Defensive guards are valid candidates and may win when inputs are dynamic or uncertain. For deterministic literal data with an obvious direct correction, do not rank a guard first solely because it avoids the crash.
+          Penalize silent exception swallowing, over-permissive validation, global side effects, security issues, and changes that may break callers.
+          The ranking must contain all and only the fixer proposal IDs, for example ["conservative","defensive","root_cause"]. selected must equal ranking[0].
+          Return only JSON inside a ```json block:
+          {"voter_id":"risk_judge","ranking":["..."],"selected":"...","rationale":"..."}
+    - id: Borda Consensus
+      type: python
+      description: Selects the winner solution with Borda count.
+      context_window: -1
+      config:
+        script_path: debugger_agents/run_consensus.py
+        timeout_seconds: 60
+    - id: Final Report
+      type: agent
+      config:
+        name: qwen2.5-coder:3b
+        provider: openai
         role: |
           You are Final Debugging Report Writer.
-          Summarize the original failure, the three fixer proposals, the judge ranking, borda consensus, and provide the winner solution in copyable code format.
-          Do not invent results; use only the provided workflow outputs.
+          Use only the provided workflow outputs. Do not invent, merge, normalize, or rewrite fixer proposals.
+          Prefer the normalized fields inside the consensus_result JSON over earlier raw messages.
 
+          Produce a concise final report with these sections:
+          1) Original failure: summarize only from the reproduced error/context.
+          2) Fixer proposals: use consensus_result.proposals. List each fixer_id separately. For each one, copy its own strategy, diagnosis, files_changed, confidence, and solution_files exactly as provided in that proposal. Never replace a fixer's solution_files with another fixer's code or with the consensus winner.
+          3) Judge rankings: use consensus_result.votes. List the ranking from each voter_id exactly as provided.
+          4) Borda consensus: report winner_id, scores, and ranked order from the consensus_result.
+          5) Winner solution: provide only the winner.solution_files or winner.solution_code from consensus_result.winner in copyable code format.
 
+          If a value is missing from the workflow outputs, write "not provided" instead of guessing.
+          If two proposals look identical, still report them separately only if their original solution_files are identical.
+        base_url: ${BASE_URL}
+        api_key: ${API_KEY}
+        params:
+          protocol: chat
+          temperature: 0.1
+          max_tokens: 1000
+        tooling: []
+        thinking: null
+        memories: []
+        skills: null
+        retry: null
+      description: Produces a final report and the winner solution in copyable code format.
+      context_window: -1
+      log_output: true
   edges:
     - from: Input Context
       to: Auto Reproducer
       trigger: true
-      condition: &always {type: function, config: {name: 'true'}}
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Input Context
       to: Static Analyzer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
       to: Static Analyzer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-
     - from: Input Context
       to: Conservative Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
       to: Conservative Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Static Analyzer
       to: Conservative Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-
     - from: Input Context
       to: Defensive Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
       to: Defensive Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Static Analyzer
       to: Defensive Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-
     - from: Input Context
       to: Root Cause Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
       to: Root Cause Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Static Analyzer
       to: Root Cause Fixer
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-
-    
-
     - from: Input Context
-      to: Solution Judge
+      to: Correctness Judge
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
-      to: Solution Judge
+      to: Correctness Judge
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Static Analyzer
-      to: Solution Judge
+      to: Correctness Judge
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Conservative Fixer
-      to: Solution Judge
+      to: Correctness Judge
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Defensive Fixer
-      to: Solution Judge
+      to: Correctness Judge
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Root Cause Fixer
-      to: Solution Judge
+      to: Correctness Judge
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-
+    - from: Input Context
+      to: Minimality Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Auto Reproducer
+      to: Minimality Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Static Analyzer
+      to: Minimality Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Conservative Fixer
+      to: Minimality Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Defensive Fixer
+      to: Minimality Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Root Cause Fixer
+      to: Minimality Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Input Context
+      to: Risk Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Auto Reproducer
+      to: Risk Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Static Analyzer
+      to: Risk Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Conservative Fixer
+      to: Risk Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Defensive Fixer
+      to: Risk Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Root Cause Fixer
+      to: Risk Judge
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
     - from: Input Context
       to: Borda Consensus
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Auto Reproducer
       to: Borda Consensus
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Conservative Fixer
       to: Borda Consensus
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Defensive Fixer
       to: Borda Consensus
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
     - from: Root Cause Fixer
       to: Borda Consensus
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-    - from: Solution Judge
+    - from: Correctness Judge
       to: Borda Consensus
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
-
+    - from: Minimality Judge
+      to: Borda Consensus
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Risk Judge
+      to: Borda Consensus
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
     - from: Borda Consensus
       to: Final Report
       trigger: true
-      condition: *always
+      condition:
+        type: function
+        config:
+          name: 'true'
       carry_data: true
       keep_message: true
