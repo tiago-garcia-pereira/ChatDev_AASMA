@@ -42,6 +42,12 @@ export async function postYaml(filename, content) {
           success: false,
           detail: data.detail
         }
+      } else if (data.error?.message) {
+        return {
+          success: false,
+          detail: data.error.message,
+          message: data.error.message
+        }
       } else {
         return {
           success: false,

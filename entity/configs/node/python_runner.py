@@ -22,6 +22,7 @@ def _default_interpreter() -> str:
 @dataclass
 class PythonRunnerConfig(BaseConfig):
     interpreter: str = field(default_factory=_default_interpreter)
+    script_path: str | None = None
     args: List[str] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     timeout_seconds: int = 60
@@ -31,6 +32,7 @@ class PythonRunnerConfig(BaseConfig):
     def from_dict(cls, data: Mapping[str, Any], *, path: str) -> "PythonRunnerConfig":
         mapping = require_mapping(data, path)
         interpreter = optional_str(mapping, "interpreter", path) or _default_interpreter()
+        script_path = optional_str(mapping, "script_path", path)
         args_raw = mapping.get("args")
         args = [str(item) for item in ensure_list(args_raw)] if args_raw is not None else []
         env = optional_dict(mapping, "env", path) or {}
@@ -42,6 +44,7 @@ class PythonRunnerConfig(BaseConfig):
             raise ConfigError("encoding cannot be empty", f"{path}.encoding")
         return cls(
             interpreter=interpreter,
+            script_path=script_path,
             args=args,
             env={str(key): str(value) for key, value in env.items()},
             timeout_seconds=timeout_value,
@@ -67,6 +70,14 @@ class PythonRunnerConfig(BaseConfig):
             default=[],
             description="Parameter list appended after interpreter",
             advance=True,
+        ),
+        "script_path": ConfigFieldSpec(
+            name="script_path",
+            display_name="Script Path",
+            type_hint="str",
+            required=False,
+            default=None,
+            description="Optional Python script to execute instead of extracting code from the latest input message. Relative paths are resolved from the workflow file directory.",
         ),
         "env": ConfigFieldSpec(
             name="env",

@@ -1,5 +1,6 @@
 """Executor for Python code runner nodes."""
 
+import json
 import os
 import re
 import subprocess
@@ -37,21 +38,23 @@ class PythonNodeExecutor(NodeExecutor):
             raise ValueError(f"Node {node.id} is not a python node")
 
         workspace = self._ensure_workspace_root()
-        last_message = inputs[-1] if inputs else None
-        code_payload = self._extract_code(last_message)
-        if not code_payload:
-            return [self._build_failure_message(
-                node,
-                workspace,
-                error_text="No executable code segment found",
-            )]
-
-        script_path = self._write_script_file(node, workspace, code_payload)
         config = node.as_config(PythonRunnerConfig)
         if not config:
             raise ValueError(f"Node {node.id} missing PythonRunnerConfig")
 
-        result = self._run_process(config, script_path, workspace, node)
+        script_path = self._resolve_script_path(config, workspace)
+        if script_path is None:
+            last_message = inputs[-1] if inputs else None
+            code_payload = self._extract_code(last_message)
+            if not code_payload:
+                return [self._build_failure_message(
+                    node,
+                    workspace,
+                    error_text="No executable code segment found",
+                )]
+            script_path = self._write_script_file(node, workspace, code_payload)
+
+        result = self._run_process(config, script_path, workspace, node, inputs)
         metadata = {
             "workspace": str(workspace),
             "script_path": str(script_path),
@@ -113,12 +116,36 @@ class PythonNodeExecutor(NodeExecutor):
         path.write_text(code + ("\n" if not code.endswith("\n") else ""), encoding="utf-8")
         return path
 
+    def _resolve_script_path(self, config: PythonRunnerConfig, workspace: Path) -> Path | None:
+        if not config.script_path:
+            return None
+        raw_path = Path(config.script_path)
+        if raw_path.is_absolute():
+            return raw_path.resolve()
+
+        candidates: list[Path] = []
+        source_path = self.context.global_state.get("graph_source_path")
+        if source_path:
+            candidates.append(Path(source_path).resolve().parent / raw_path)
+        candidates.append(Path.cwd().resolve() / raw_path)
+
+        graph_dir = self.context.global_state.get("graph_directory")
+        if graph_dir:
+            candidates.append(Path(graph_dir).resolve() / raw_path)
+        candidates.append(workspace / raw_path)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate.resolve()
+        return candidates[0].resolve()
+
     def _run_process(
         self,
         config: PythonRunnerConfig,
         script_path: Path,
         workspace: Path,
         node: Node,
+        inputs: List[Message],
     ) -> _ExecutionResult:
         cmd = [config.interpreter]
         if config.args:
@@ -131,12 +158,17 @@ class PythonNodeExecutor(NodeExecutor):
                 "MAC_CODE_WORKSPACE": str(workspace),
                 "MAC_CODE_SCRIPT": str(script_path),
                 "MAC_NODE_ID": node.id,
+                "CHATDEV_NODE_INPUTS": json.dumps(
+                    [message.to_dict(include_data=False) for message in inputs],
+                    ensure_ascii=False,
+                ),
             }
         )
         try:
             completed = subprocess.run(
                 cmd,
                 cwd=str(workspace),
+                env=env,
                 capture_output=True,
                 check=False,
                 timeout=config.timeout_seconds,
