@@ -21,8 +21,14 @@ def _is_vote(obj: dict) -> bool:
 def main() -> None:
     proposals_by_id: dict[str, PatchProposal] = {}
     votes_by_id: dict[str, FixerVote] = {}
+    project_path: str | None = None
+    test_command: str | None = None
     for text in input_texts():
         for obj in extract_json_objects(text):
+            if project_path is None and isinstance(obj.get("project_path"), str):
+                project_path = obj["project_path"]
+            if test_command is None and isinstance(obj.get("test_command"), str):
+                test_command = obj["test_command"]
             if _is_proposal(obj):
                 proposal = PatchProposal.from_dict(obj)
                 proposals_by_id.setdefault(proposal.proposal_id, proposal)
@@ -38,6 +44,10 @@ def main() -> None:
     result["valid_proposal_count"] = len(proposals)
     result["rejected_proposals"] = []
     result["vote_count"] = len(votes)
+    if project_path:
+        result["project_path"] = project_path
+    if test_command:
+        result["test_command"] = test_command
     result["proposals"] = [proposal.raw for proposal in proposals]
     result["votes"] = [
         {

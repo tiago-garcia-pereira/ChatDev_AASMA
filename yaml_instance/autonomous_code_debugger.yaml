@@ -212,6 +212,13 @@ graph:
       config:
         script_path: debugger_agents/run_consensus.py
         timeout_seconds: 60
+    - id: Patch Applier
+      type: python
+      description: Applies the selected solution files to the target project.
+      context_window: -1
+      config:
+        script_path: debugger_agents/run_patch_applier.py
+        timeout_seconds: 120
     - id: Final Report
       type: agent
       config:
@@ -228,6 +235,9 @@ graph:
           3) Judge rankings: use consensus_result.votes. List the ranking from each voter_id exactly as provided.
           4) Borda consensus: report winner_id, scores, and ranked order from the consensus_result.
           5) Winner solution: provide only the winner.solution_files or winner.solution_code from consensus_result.winner in copyable code format.
+           6) Patch application status: use the patch_applier_result, if present, to say whether the patch applier succeeded.
+             Consider it successful when errors is empty and applied_files is not empty.
+             If it failed, state the errors and do not claim that the patch was applied.
 
           If a value is missing from the workflow outputs, write "not provided" instead of guessing.
           If two proposals look identical, still report them separately only if their original solution_files are identical.
@@ -589,6 +599,24 @@ graph:
       carry_data: true
       keep_message: true
     - from: Borda Consensus
+      to: Patch Applier
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Borda Consensus
+      to: Final Report
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Patch Applier
       to: Final Report
       trigger: true
       condition:

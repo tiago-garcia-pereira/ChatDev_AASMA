@@ -181,6 +181,43 @@
                 </div>
                 </div>
               </div>
+
+              <!-- Human prompt with explicit choices -->
+              <div
+                v-else-if="message.type === 'human-prompt'"
+                class="dialogue dialogue-human-prompt"
+              >
+                <div class="profile-picture">
+                  <img :src="message.avatar" :alt="`Avatar ${index + 1}`" />
+                </div>
+                <div class="message-content">
+                  <div class="user-name">
+                    {{ message.name }}
+                    <span class="message-timestamp">{{ formatTime(message.timestamp) }}</span>
+                  </div>
+                  <div class="message-bubble human-prompt-bubble">
+                    <CollapsibleMessage
+                      v-if="message.text"
+                      :html-content="message.htmlContent || renderMarkdown(message.text)"
+                      :raw-content="message.text"
+                      :default-expanded="true"
+                    />
+                    <div v-if="message.choices?.length" class="human-choice-row">
+                      <button
+                        v-for="choice in message.choices"
+                        :key="choice.value"
+                        type="button"
+                        class="human-choice-button"
+                        :class="{ winner: choice.isWinner }"
+                        @click="submitHumanChoice(choice.value)"
+                        :title="choice.label"
+                      >
+                        {{ choice.label }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
             </div>
@@ -490,6 +527,145 @@ const md = new MarkdownIt({
 
 const renderMarkdown = (text) => {
   return md.render(text || '')
+}
+
+const extractConsensusResult = (text) => {
+  if (!text || typeof text !== 'string') {
+    return null
+  }
+
+  const commentMatch = text.match(/<!--CONSENSUS_JSON:(.*?)-->/s)
+  if (commentMatch && commentMatch[1]) {
+    try {
+      const parsed = JSON.parse(commentMatch[1].trim())
+      if (parsed && parsed.type === 'consensus_result') {
+        return parsed
+      }
+    } catch (error) {
+      // Fall back to the visible text parser below.
+    }
+  }
+
+  const markerPattern = /"type"\s*:\s*"consensus_result"/g
+  for (const match of text.matchAll(markerPattern)) {
+    const markerIndex = match.index ?? -1
+    if (markerIndex < 0) {
+      continue
+    }
+
+    const startIndex = text.lastIndexOf('{', markerIndex)
+    if (startIndex < 0) {
+      continue
+    }
+
+    let depth = 0
+    let inString = false
+    let escaped = false
+    for (let index = startIndex; index < text.length; index += 1) {
+      const char = text[index]
+      if (escaped) {
+        escaped = false
+        continue
+      }
+      if (char === '\\') {
+        escaped = true
+        continue
+      }
+      if (char === '"') {
+        inString = !inString
+        continue
+      }
+      if (inString) {
+        continue
+      }
+      if (char === '{') {
+        depth += 1
+      } else if (char === '}') {
+        depth -= 1
+        if (depth === 0) {
+          const jsonText = text.slice(startIndex, index + 1)
+          try {
+            const parsed = JSON.parse(jsonText)
+            if (parsed && parsed.type === 'consensus_result') {
+              return parsed
+            }
+          } catch (error) {
+            // Continue scanning in case there is another embedded JSON object.
+          }
+          break
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+const buildHumanPromptPayload = (taskDescription, rawInput) => {
+  const consensus = extractConsensusResult(rawInput)
+  if (!consensus) {
+    return {
+      markdown: `${taskDescription}\n\n${rawInput || ''}`.trim(),
+      choices: []
+    }
+  }
+
+  const proposals = Array.isArray(consensus.proposals) ? consensus.proposals : []
+  const ranked = Array.isArray(consensus.ranked) ? consensus.ranked.slice(0, 3) : []
+  const proposalMap = new Map()
+  for (const proposal of proposals) {
+    if (proposal && proposal.fixer_id) {
+      proposalMap.set(String(proposal.fixer_id), proposal)
+    }
+  }
+
+  const winnerId = String(consensus.winner_id || '').trim()
+  const lines = []
+  lines.push('### Human-Agent Interaction')
+  lines.push('')
+  lines.push('Review the 3 top-ranked fixes and choose which one should be applied.')
+  lines.push('')
+  lines.push(`**Winner from Borda consensus:** \`${winnerId || 'not provided'}\``)
+  lines.push('')
+  lines.push('Choose by clicking one of the options below, or type `1`, `2`, `3`, or a `fixer_id` in the input box.')
+  lines.push('')
+
+  const choices = []
+  ranked.forEach((item, index) => {
+    const proposalId = String(item.proposal_id || '').trim()
+    const proposal = proposalMap.get(proposalId) || {}
+    const score = item.score ?? 'n/a'
+    const strategy = String(proposal.strategy || '').trim() || 'not provided'
+    const diagnosis = String(proposal.diagnosis || proposal.rationale || '').trim() || 'not provided'
+    const confidence = proposal.confidence ?? 'n/a'
+    const isWinner = proposalId === winnerId
+
+    lines.push(`#### ${index + 1}. \`${proposalId || 'unknown'}\`${isWinner ? ' [Winner]' : ''}`)
+    lines.push(`- Score: \`${score}\``)
+    lines.push(`- Confidence: \`${confidence}\``)
+    lines.push(`- Strategy: ${strategy}`)
+    lines.push(`- Diagnosis: ${diagnosis}`)
+    lines.push('')
+
+    choices.push({
+      label: `${index + 1} · ${proposalId}${isWinner ? ' · Winner' : ''}`,
+      value: proposalId || String(index + 1),
+      isWinner,
+    })
+  })
+
+  if (winnerId) {
+    choices.push({
+      label: `Keep winner · ${winnerId}`,
+      value: winnerId,
+      isWinner: true,
+    })
+  }
+
+  return {
+    markdown: lines.join('\n').trim(),
+    choices,
+  }
 }
 
 const formatTime = (timestamp) => {
@@ -948,6 +1124,34 @@ const addDialogue = (name, message) => {
   })
 }
 
+const addHumanPromptDialogue = (name, message, choices = []) => {
+  if (message === null || message === undefined) {
+    return
+  }
+  const text = typeof message === 'string' ? message : String(message)
+  if (!text.trim()) {
+    return
+  }
+  let avatar
+  if (nameToSpriteMap.value.has(name)) {
+    avatar = nameToSpriteMap.value.get(name)
+  } else {
+    avatar = spriteFetcher.fetchSprite(name)
+    nameToSpriteMap.value.set(name, avatar)
+  }
+
+  chatMessages.value.push({
+    type: 'human-prompt',
+    name,
+    text,
+    htmlContent: renderMarkdown(text),
+    avatar,
+    isRight: false,
+    timestamp: Date.now(),
+    choices,
+  })
+}
+
 // Add a notification (supports levels)
 const addChatNotification = (message, { type = 'notification' } = {}) => {
   chatMessages.value.push({
@@ -1390,12 +1594,13 @@ const handleButtonClick = () => {
 }
 
 // Send human input
-const sendHumanInput = () => {
+const sendHumanInput = (overrideInput = null) => {
   if (!ws) {
     return
   }
 
-  const trimmedInput = taskPrompt.value.trim()
+  const rawInput = overrideInput === null || overrideInput === undefined ? taskPrompt.value : String(overrideInput)
+  const trimmedInput = rawInput.trim()
   const attachmentIds = uploadedAttachments.value.map((attachment) => attachment.attachmentId)
   const attachmentNames = uploadedAttachments.value.map(
     (attachment) => attachment.name || attachment.attachmentId
@@ -1429,6 +1634,15 @@ const sendHumanInput = () => {
   }
 
   taskPrompt.value = ''
+}
+
+const submitHumanChoice = (choiceValue) => {
+  const value = choiceValue === null || choiceValue === undefined ? '' : String(choiceValue).trim()
+  if (!value) {
+    return
+  }
+  taskPrompt.value = value
+  sendHumanInput(value)
 }
 
 // Establish a WebSocket connection
@@ -2027,8 +2241,8 @@ const processMessage = async (msg) => {
 
   // Prompt for human input
   if (msg.type === 'human_input_required') {
-    const fullMessage = msg.data.task_description + '\n\n' + msg.data.input
-    addDialogue(`${msg.data.node_id}`, `${fullMessage}`)
+    const promptPayload = buildHumanPromptPayload(msg.data.task_description || '', msg.data.input || '')
+    addHumanPromptDialogue(`${msg.data.node_id}`, promptPayload.markdown, promptPayload.choices)
 
     status.value = "Waiting for input..."
     shouldGlow.value = true
@@ -2670,6 +2884,51 @@ watch(
   border-color: rgba(160, 196, 255, 0.3);
   border-top-left-radius: 12px;
   border-top-right-radius: 2px;
+}
+
+.dialogue-human-prompt .message-bubble {
+  background: linear-gradient(180deg, rgba(24, 34, 48, 0.98), rgba(14, 22, 34, 0.98));
+  border-color: rgba(153, 234, 249, 0.35);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.22);
+  padding: 16px;
+}
+
+.human-prompt-bubble :deep(.collapsible-message) {
+  padding-top: 0;
+}
+
+.human-prompt-bubble :deep(.message-text) {
+  color: #eef6ff;
+}
+
+.human-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.human-choice-button {
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(153, 234, 249, 0.28);
+  background: rgba(153, 234, 249, 0.08);
+  color: #eef6ff;
+  font-size: 13px;
+  font-weight: 600;
+  transition: transform 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.human-choice-button:hover {
+  transform: translateY(-1px);
+  background: rgba(153, 234, 249, 0.16);
+  border-color: rgba(153, 234, 249, 0.5);
+}
+
+.human-choice-button.winner {
+  background: linear-gradient(135deg, rgba(170, 255, 205, 0.18), rgba(153, 234, 249, 0.14));
+  border-color: rgba(170, 255, 205, 0.45);
+  color: #f4fff9;
 }
 
 .loading-bubble {
