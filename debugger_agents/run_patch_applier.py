@@ -1,5 +1,6 @@
-"""Apply the consensus winner solution files to the target project without using LLMs."""
+"""Apply the user-selected solution files to the target project without using LLMs."""
 
+import json
 import os
 import sys
 import tempfile
@@ -8,7 +9,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from debugger_agents.io_utils import combined_input_text, extract_json_objects, find_project_path, print_json
+from debugger_agents.io_utils import combined_input_text, find_project_path, input_texts, print_json
+
+_CHOICE_TO_FIXER = {
+    "1": "conservative",
+    "2": "defensive",
+    "3": "root_cause",
+}
 
 
 def main() -> None:
@@ -16,7 +23,7 @@ def main() -> None:
     project_path = find_project_path(text)
     root = project_path if project_path.is_dir() else project_path.parent
 
-    winner = _find_winner(text)
+    winner = _find_winner()
     payload: dict[str, Any] = {
         "type": "patch_applier_result",
         "project_path": str(project_path),
@@ -55,15 +62,41 @@ def main() -> None:
 
     payload["applied_files"] = applied
     payload["updated_count"] = len(applied)
+    payload["applied_fixer_id"] = winner.get("fixer_id")
     print_json(payload)
 
 
-def _find_winner(text: str) -> dict[str, Any] | None:
-    for obj in extract_json_objects(text):
-        if obj.get("type") == "consensus_result" and isinstance(obj.get("winner"), dict):
-            return obj["winner"]
-        if isinstance(obj.get("winner"), dict) and "scores" in obj:
-            return obj["winner"]
+def _find_winner() -> dict[str, Any] | None:
+    # Read user choice from input_texts() which correctly parses
+    # content blocks like [{"type": "text", "text": "2"}]
+    user_choice = None
+    for text in input_texts():
+        for line in reversed(text.splitlines()):
+            stripped = line.strip()
+            if stripped in _CHOICE_TO_FIXER:
+                user_choice = stripped
+                break
+        if user_choice:
+            break
+
+    chosen_fixer_id = _CHOICE_TO_FIXER.get(user_choice) if user_choice else None
+
+    # Load consensus_result saved by run_consensus.py
+    consensus_path = Path(tempfile.gettempdir()) / "chatdev_consensus_result.json"
+    if not consensus_path.exists():
+        return None
+
+    try:
+        consensus = json.loads(consensus_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    # Find and return the proposal the user chose
+    if chosen_fixer_id and isinstance(consensus.get("proposals"), list):
+        for proposal in consensus["proposals"]:
+            if proposal.get("fixer_id") == chosen_fixer_id:
+                return proposal
+
     return None
 
 
@@ -73,7 +106,6 @@ def _resolve_target(root: Path, rel_path: str) -> Path | None:
         candidate = (root / candidate).resolve()
     else:
         candidate = candidate.resolve()
-
     try:
         candidate.relative_to(root.resolve())
     except ValueError:

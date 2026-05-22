@@ -264,9 +264,24 @@ graph:
       config:
         script_path: debugger_agents/run_consensus.py
         timeout_seconds: 60
+    - id: Patch Presenter
+      type: python
+      description: Formats the three patch proposals for human review.
+      context_window: -1
+      config:
+        script_path: debugger_agents/run_patch_presenter.py
+        timeout_seconds: 30
+    - id: Human Patch Selector
+      type: human
+      description: Type 1, 2, or 3 to select which patch to apply, or REJECT to skip.
+      context_window: -1
+      config:
+        description: |
+          Type 1, 2, or 3 to select which patch to apply, or REJECT to skip.
+
     - id: Patch Applier
       type: python
-      description: Applies the selected solution files to the target project.
+      description: Applies the user-selected solution files to the target project.
       context_window: -1
       config:
         script_path: debugger_agents/run_patch_applier.py
@@ -651,6 +666,24 @@ graph:
       carry_data: true
       keep_message: true
     - from: Borda Consensus
+      to: Patch Presenter
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Patch Presenter
+      to: Human Patch Selector
+      trigger: true
+      condition:
+        type: function
+        config:
+          name: 'true'
+      carry_data: true
+      keep_message: true
+    - from: Borda Consensus
       to: Patch Applier
       trigger: true
       condition:
@@ -659,6 +692,44 @@ graph:
           name: 'true'
       carry_data: true
       keep_message: true
+    - from: Human Patch Selector
+      to: Patch Applier
+      trigger: true
+      condition:
+        type: keyword
+        config:
+          any:
+            - "1"
+            - "2"
+            - "3"
+          case_sensitive: false
+      carry_data: true
+      keep_message: true
+    - from: Human Patch Selector
+      to: Final Report
+      trigger: true
+      condition:
+        type: keyword
+        config:
+          any:
+            - "REJECT"
+          case_sensitive: false
+      carry_data: true
+      keep_message: true
+    - from: Human Patch Selector
+      to: Human Patch Selector
+      trigger: true
+      condition:
+        type: keyword
+        config:
+          none:
+            - "1"
+            - "2"
+            - "3"
+            - "REJECT"
+          case_sensitive: false
+      carry_data: true
+      keep_message: false
     - from: Borda Consensus
       to: Final Report
       trigger: true

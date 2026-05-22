@@ -1,6 +1,8 @@
 """ChatDev script node entry point for consensus selection."""
 
 import sys
+import json
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -35,7 +37,6 @@ def main() -> None:
             if _is_vote(obj):
                 vote = FixerVote.from_dict(obj)
                 votes_by_id.setdefault(vote.voter_id, vote)
-
     proposals = list(proposals_by_id.values())
     votes = list(votes_by_id.values())
     result = select_winner(proposals, votes)
@@ -58,8 +59,12 @@ def main() -> None:
         }
         for vote in votes
     ]
-    print_json(result)
 
+    # Save consensus_result to a known temp file so run_patch_applier.py can read it
+    consensus_path = Path(tempfile.gettempdir()) / "chatdev_consensus_result.json"
+    consensus_path.write_text(json.dumps(result), encoding="utf-8")
+
+    print_json(result)
 
 if __name__ == "__main__":
     main()
