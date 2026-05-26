@@ -24,6 +24,7 @@ RELOAD_SOURCE_DIRS = [
     "tools",
     "utils",
     "workflow",
+    "debugger_agents"
 ]
 
 # Directory names whose contents must never trigger a reload. These are
