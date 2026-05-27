@@ -27,6 +27,15 @@ stop: ## Stop backend and frontend servers cross-platform
 # Tools & Maintenance
 # ==============================================================================
 
+.PHONY:install-deps
+install-deps: ## Install all project dependencies
+	@uv pip install -r requirements.txt
+	@cd frontend && npm install
+
+.PHONY: build
+build: ## Build the frontend for production
+	@cd frontend && npm run build
+	
 .PHONY: sync
 sync: ## Sync Vue graphs to the server database
 	@uv run python tools/sync_vuegraphs.py

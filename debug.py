@@ -14,10 +14,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the autonomous code debugger workflow from the command line.",
     )
     parser.add_argument(
-        "--file",
+        "--path",
         type=Path,
         required=True,
-        help="Python file or project path to debug.",
+        help="Python project or file path to debug.\nIf it you pass a project path as an argument, please, give more context of the goal in the prompt, using:\n--prompt <TEXT>",
     )
     parser.add_argument(
         "--workflow",
@@ -82,7 +82,7 @@ def main() -> None:
             "Run this command with the project environment that has the debugger dependencies installed."
         ) from exc
 
-    target_path = args.file.expanduser().resolve()
+    target_path = args.path.expanduser().resolve()
     if not target_path.exists():
         raise SystemExit(f"Target path does not exist: {target_path}")
 
