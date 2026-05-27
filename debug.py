@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 DEFAULT_WORKFLOW = Path("yaml_instance/autonomous_code_debugger.yaml")
+OUTPUT_ROOT = Path("WareHouse")
+
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,7 +98,7 @@ def main() -> None:
 
     prompt = build_debug_prompt(target_path, args.prompt, args.test_command)
     result = run_workflow(
-        workflow_path,
+        yaml_file=workflow_path,
         task_prompt=prompt,
         attachments=attachments,
         session_name=session_name,
