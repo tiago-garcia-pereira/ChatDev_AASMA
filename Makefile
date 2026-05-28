@@ -35,6 +35,19 @@ sync: ## Sync Vue graphs to the server database
 validate-yamls: ## Validate all YAML configuration files
 	@uv run python tools/validate_all_yamls.py
 
+DEBUG_PROJECT_PATH := $(or $(PROJECT_PATH),$(patsubst PROJECT_PATH:%,%,$(filter PROJECT_PATH:%,$(MAKECMDGOALS))))
+
+.PHONY: debug
+debug: ## Run autonomous debugger: make debug PROJECT_PATH=/path/to/project
+	@if [ -z "$(DEBUG_PROJECT_PATH)" ]; then \
+		echo "Usage: make debug PROJECT_PATH=/path/to/project"; \
+		exit 2; \
+	fi
+	@.venv/bin/python -m debugger_agents.cli "$(DEBUG_PROJECT_PATH)"
+
+PROJECT_PATH\:%:
+	@:
+
 # ==============================================================================
 # Help
 # ==============================================================================
