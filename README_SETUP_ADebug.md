@@ -146,7 +146,28 @@ $env:VITE_API_BASE_URL="http://localhost:6400"
 npm run dev
 ```
 
-## 6. Executar o autonomous debugger Command Line Interface
+## 6. Executar o autonomous debugger pela interface ChatDev
+
+Após iniciar a aplicação com `make dev`, aceda à interface web:
+
+```text
+http://localhost:5173
+```
+
+Para iniciar o autonomous debugger pela interface:
+
+1. Clique em `Workflows`.
+2. Selecione o YAML `autonomous_code_debugger.yaml`.
+3. Clique em `Launch`.
+4. Indique o caminho do projeto ou ficheiro a analisar, por exemplo:
+
+```text
+PROJECT_PATH: /caminho/para/ficheiro_ou_projeto
+```
+
+Após o lançamento, o workflow executa os nós definidos no YAML, incluindo o `Input Context`, o `Auto Reproducer`, o `Static Analyzer`, os fixers, os judges e o consenso final.
+
+## 7. Executar o autonomous debugger Command Line Interface
 
 O comando principal é:
 
@@ -173,7 +194,7 @@ Também é possível passar o caminho no formato alternativo suportado pelo Make
 make debug PROJECT_PATH:/caminho/para/ficheiro_ou_projeto
 ```
 
-## 7. Executar o autonomous debugger Command Line Interface manualmente
+## 8. Executar o autonomous debugger Command Line Interface manualmente
 
 O `make debug` chama internamente:
 
@@ -187,7 +208,7 @@ Caso a venv esteja ativa, também é possível utilizar:
 python -m debugger_agents.cli "/caminho/para/ficheiro_ou_projeto"
 ```
 
-## 8. Comandos úteis
+## 9. Comandos úteis
 
 Ver os comandos disponíveis:
 
@@ -225,7 +246,7 @@ Executar testes e lint:
 make check-backend
 ```
 
-## 9. Notas de troubleshooting
+## 10. Notas de troubleshooting
 
 Se `make dev` falhar porque uma porta já está ocupada, pare processos antigos:
 
