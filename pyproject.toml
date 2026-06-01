@@ -25,6 +25,8 @@ dependencies = [
     "pydantic==2.12.5",
     "requests",
     "pytest",
+    "ruff",
+    "mypy",
     "ddgs",
     "beautifulsoup4",
     "matplotlib",
