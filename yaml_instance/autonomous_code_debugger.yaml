@@ -50,7 +50,7 @@ graph:
         params:
           protocol: chat
           temperature: 0.1
-          max_tokens: 700
+          max_tokens: 1000
         tooling:
           - type: function
             config:
@@ -98,7 +98,7 @@ graph:
         params:
           protocol: chat
           temperature: 0.1
-          max_tokens: 700
+          max_tokens: 1000
         tooling:
           - type: function
             config:
@@ -149,7 +149,7 @@ graph:
         params:
           protocol: chat
           temperature: 0.1
-          max_tokens: 700
+          max_tokens: 1000
         tooling:
           - type: function
             config:
