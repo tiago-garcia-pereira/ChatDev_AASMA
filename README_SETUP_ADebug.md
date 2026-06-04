@@ -1,38 +1,40 @@
-# Configuração do Projeto AASMA / ChatDev
+# AASMA / ChatDev Project Setup
 
-Este guia descreve como preparar o projeto após o `git clone` e como executar tanto a aplicação completa como o autonomous debugger em command line interface.
+This document describes the procedure required to configure the project after cloning the repository, and to execute both the complete application and the autonomous debugger through its command line interface.
 
-## 1. Requisitos
+This project is a fork of the ChatDev framework. The work developed in this fork is primarily located in the `debugger_agents` directory and in the `yaml_instance/autonomous_code_debugger.yaml` workflow.
 
-Instale previamente:
+## 1. Requirements
+
+The following software must be installed in advance:
 
 - Python 3.12
-- Node.js 18 ou superior
+- Node.js 18 or later
 - `npm`
 - `make`
 - `uv`
 - Ollama
-- modelo Ollama `qwen2.5-coder:3b`
+- Ollama model `qwen2.5-coder:3b`
 
-Para instalar o `uv`, caso ainda não esteja disponível:
+If `uv` is not already installed, it may be installed as follows:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Instale o Ollama a partir de:
+Ollama should be installed from:
 
 ```text
 https://ollama.com/download
 ```
 
-Após instalar o Ollama, descarregue o modelo utilizado pelo autonomous debugger:
+After installing Ollama, download the model used by the autonomous debugger:
 
 ```bash
 ollama pull qwen2.5-coder:3b
 ```
 
-Confirme as versões:
+Verify the installed versions:
 
 ```bash
 python3 --version
@@ -43,46 +45,39 @@ make --version
 ollama --version
 ```
 
-Todos os comandos abaixo assumem que a execução ocorre dentro da pasta `ChatDev_AASMA`.
+All commands presented below assume that they are executed from within the `ChatDev_AASMA` directory.
 
-## 2. Configurar variáveis de ambiente
+## 2. Environment Configuration
 
-Crie o ficheiro local `.env`:
+Create a local `.env` file:
 
 ```bash
 cp .env.example .env
 ```
 
-Ao copiar o `.env.example`, as variáveis ficam definidas para utilizar localmente o Ollama. A configuração esperada é:
+After copying `.env.example`, the environment variables are configured to use Ollama locally. The expected configuration is:
 
 ```env
 BASE_URL=http://localhost:11434/v1
 API_KEY=ollama
 ```
 
-O workflow `yaml_instance/autonomous_code_debugger.yaml` utiliza estas variáveis para chamar o modelo configurado nos agentes.
+The `yaml_instance/autonomous_code_debugger.yaml` workflow uses these variables to invoke the model configured for the agents.
 
-## 3. Instalar dependências
+## 3. Dependency Installation
 
-### Backend Python
+### Python Backend
 
-Forma recomendada, utilizando `uv`:
+The recommended installation method uses `uv`:
 
 ```bash
 uv sync
 ```
 
-Este comando cria ou atualiza a `.venv` do projeto com as dependências do `pyproject.toml`.
+This command creates or updates the project `.venv` environment with the dependencies specified in `pyproject.toml`.
 
-Alternativa com `pip`:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-O `requirements.txt` inclui também `ruff` e `mypy`, utilizados pelo static analyzer do autonomous debugger quando estiverem disponíveis.
+The `requirements.txt` file also includes `ruff` and `mypy`, which are used by the autonomous debugger static analyzer when available.
 
 ### Frontend
 
@@ -92,179 +87,87 @@ npm install
 cd ..
 ```
 
-Opcional, mas útil para o comando `make stop`:
+The root-level `package.json` includes the `kill-port` dependency used by the `make stop` target. To install this optional dependency, run the following command from the `ChatDev_AASMA` directory:
 
 ```bash
 npm install
 ```
 
-## 4. Executar a aplicação completa
+## 4. Running the Complete Application
 
-Para iniciar backend e frontend em conjunto:
+To start the backend and frontend simultaneously, run:
 
 ```bash
 make dev
 ```
 
-Este comando inicia:
+This command starts:
 
-- backend em `http://localhost:6400`
-- frontend em `http://localhost:5173`
+- the backend at `http://localhost:6400`
+- the frontend at `http://localhost:5173`
 
-Abra no browser:
-
-```text
-http://localhost:5173
-```
-
-Para parar os servidores:
-
-```bash
-make stop
-```
-
-## 5. Executar manualmente, sem Makefile
-
-Backend:
-
-```bash
-uv run python server_main.py --port 6400 --reload
-```
-
-Frontend:
-
-```bash
-cd frontend
-VITE_API_BASE_URL=http://localhost:6400 npm run dev
-```
-
-Em Windows PowerShell, utilize:
-
-```powershell
-cd frontend
-$env:VITE_API_BASE_URL="http://localhost:6400"
-npm run dev
-```
-
-## 6. Executar o autonomous debugger pela interface ChatDev
-
-Após iniciar a aplicação com `make dev`, aceda à interface web:
+Open the application in a browser:
 
 ```text
 http://localhost:5173
 ```
 
-Para iniciar o autonomous debugger pela interface:
-
-1. Clique em `Workflows`.
-2. Selecione o YAML `autonomous_code_debugger.yaml`.
-3. Clique em `Launch`.
-4. Indique o caminho do projeto ou ficheiro a analisar, por exemplo:
-
-```text
-PROJECT_PATH: /caminho/para/ficheiro_ou_projeto
-```
-
-Após o lançamento, o workflow executa os nós definidos no YAML, incluindo o `Input Context`, o `Auto Reproducer`, o `Static Analyzer`, os fixers, os judges e o consenso final.
-
-## 7. Executar o autonomous debugger Command Line Interface
-
-O comando principal é:
-
-```bash
-make debug PROJECT_PATH=/caminho/para/ficheiro_ou_projeto
-```
-
-Exemplo com um ficheiro Python:
-
-```bash
-make debug PROJECT_PATH=/home/user/projeto/erros_qwen/erro1.py
-```
-
-O debugger tenta inferir automaticamente o comando de teste:
-
-- ficheiro `.py`: `python3 ficheiro.py`
-- diretório com `tests/` ou `pytest.ini`: `python3 -m pytest`
-- diretório com `main.py`: `python3 main.py`
-- outro caso: `python3 -m compileall -q .`
-
-Também é possível passar o caminho no formato alternativo suportado pelo Makefile:
-
-```bash
-make debug PROJECT_PATH:/caminho/para/ficheiro_ou_projeto
-```
-
-## 8. Executar o autonomous debugger Command Line Interface manualmente
-
-O `make debug` chama internamente:
-
-```bash
-.venv/bin/python -m debugger_agents.cli "/caminho/para/ficheiro_ou_projeto"
-```
-
-Caso a venv esteja ativa, também é possível utilizar:
-
-```bash
-python -m debugger_agents.cli "/caminho/para/ficheiro_ou_projeto"
-```
-
-## 9. Comandos úteis
-
-Ver os comandos disponíveis:
-
-```bash
-make help
-```
-
-Validar YAMLs:
-
-```bash
-make validate-yamls
-```
-
-Sincronizar Vue graphs:
-
-```bash
-make sync
-```
-
-Executar testes backend:
-
-```bash
-make backend-tests
-```
-
-Executar lint backend:
-
-```bash
-make backend-lint
-```
-
-Executar testes e lint:
-
-```bash
-make check-backend
-```
-
-## 10. Notas de troubleshooting
-
-Se `make dev` falhar porque uma porta já está ocupada, pare processos antigos:
+To stop the servers, run:
 
 ```bash
 make stop
 ```
 
-Se a `.venv` não existir, execute:
+## 5. Running the Autonomous Debugger Through the ChatDev Interface
+
+After starting the application with `make dev`, access the web interface:
+
+```text
+http://localhost:5173
+```
+
+To launch the autonomous debugger through the interface:
+
+1. Click `Workflows`.
+2. Select the `autonomous_code_debugger.yaml` YAML file.
+3. Click `Launch`.
+4. Provide the path to the project or file to be analyzed, for example:
+
+```text
+PROJECT_PATH: /path/to/file_or_project
+```
+
+After launch, the workflow executes the nodes defined in the YAML file, including `Input Context`, `Auto Reproducer`, `Static Analyzer`, the fixer agents, the judge agents, and the final consensus stage.
+
+## 7. Running the Autonomous Debugger Command Line Interface
+
+The main command is:
+
+```bash
+make debug PROJECT_PATH=/path/to/file.py
+```
+
+
+
+## 8. Troubleshooting Notes
+
+If `make dev` fails because a port is already in use, stop any previous processes:
+
+```bash
+make stop
+```
+
+If the `.venv` environment does not exist, run:
 
 ```bash
 uv sync
 ```
 
-Se o frontend não encontrar dependências:
+If the frontend dependencies are missing, run:
 
 ```bash
 cd frontend
 npm install
 ```
 
-Se o autonomous debugger não conseguir chamar os modelos, confirme se o `.env` tem `API_KEY` e `BASE_URL` preenchidos.
+If the autonomous debugger is unable to invoke the models, verify that `API_KEY` and `BASE_URL` are defined in the `.env` file.
